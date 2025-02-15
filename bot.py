@@ -1,85 +1,53 @@
+import os
+from telegram.ext import Application, CommandHandler
 import requests
-import json
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
 
-# Din API-nyckel för Telegram-botten
-TELEGRAM_BOT_TOKEN = "DIN_TELEGRAM_BOT_TOKEN"
+# Hämta din Telegram-bot-token från miljövariabler
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Funktion för att hämta platsinformation via IP
+# Skapa bot-applikationen
+app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+# Funktion för att hämta platsinformation via ipinfo.io
 def get_location():
     response = requests.get("https://ipinfo.io/json")
     data = response.json()
+    
     if "loc" in data:
         lat, lon = data["loc"].split(",")
         return float(lat), float(lon)
+    
     return None, None
 
-# Funktion för att hämta väder från SMHI
-def get_smhi_weather(lat, lon):
-    url = f"https://opendata-download-metfcst.smhi.se/api/category/pmp3g/version/2/geopoint/lat/{lat}/lon/{lon}/data.json"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        for item in data["timeSeries"][:3]:  # Nu, 1h, 24h
-            print(item)
-        return data["timeSeries"][:3]  # Returnerar de tre första mätningarna
-    return None
+# Kommandohanterare för /start
+async def start(update, context):
+    await update.message.reply_text("Hej! Jag kan ge dig flygväder. Använd /weather för att få aktuell information.")
 
-# Funktion för att hämta KP-index
-def get_kp_index():
-    url = "https://api.spaceweatherlive.com/kp.json"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        return data["kpIndex"]["current"]  # Nuvarande KP-index
-    return "Ej tillgängligt"
-
-# Funktion för Telegram-kommandot /väder
-def weather_command(update: Update, context: CallbackContext) -> None:
+# Kommandohanterare för /weather
+async def weather(update, context):
     lat, lon = get_location()
-    if not lat or not lon:
-        update.message.reply_text("Kunde inte hämta platsinformation.")
+    
+    if lat is None or lon is None:
+        await update.message.reply_text("Kunde inte hämta platsinformationen.")
         return
 
-    smhi_weather = get_smhi_weather(lat, lon)
-    kp_index = get_kp_index()
+    weather_api_url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}"
+    headers = {"User-Agent": "TelegramBot/1.0"}
+    
+    response = requests.get(weather_api_url, headers=headers)
+    weather_data = response.json()
 
-    if smhi_weather:
-        weather_text = "**Väderinformation:**\n"
-        for i, entry in enumerate(smhi_weather):
-            time = entry["validTime"]
-            temp = next(param["values"][0] for param in entry["parameters"] if param["name"] == "t")
-            wind = next(param["values"][0] for param in entry["parameters"] if param["name"] == "ws")
-            humidity = next(param["values"][0] for param in entry["parameters"] if param["name"] == "r")
-            precipitation = next(param["values"][0] for param in entry["parameters"] if param["name"] == "pmean")
-
-            if i == 0:
-                title = "Nu"
-            elif i == 1:
-                title = "Om 1 timme"
-            else:
-                title = "Om 24 timmar"
-
-            weather_text += f"\n🔹 **{title}** ({time})\n"
-            weather_text += f"🌡 Temperatur: {temp}°C\n"
-            weather_text += f"💨 Vindhastighet: {wind} m/s\n"
-            weather_text += f"💧 Luftfuktighet: {humidity}%\n"
-            weather_text += f"🌧 Nederbörd: {precipitation} mm\n"
-
-        weather_text += f"\n🌍 **Geomagnetisk aktivitet (KP-index):** {kp_index}"
+    if "properties" in weather_data:
+        temp = weather_data["properties"]["timeseries"][0]["data"]["instant"]["details"]["air_temperature"]
+        await update.message.reply_text(f"Temperaturen är {temp}°C på din plats.")
     else:
-        weather_text = "Kunde inte hämta väderinformation."
+        await update.message.reply_text("Kunde inte hämta väderdata.")
 
-    update.message.reply_text(weather_text, parse_mode="Markdown")
+# Lägg till kommandon i botten
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("weather", weather))
 
-# Skapa och starta Telegram-botten
-def main():
-    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("väder", weather_command))
-    updater.start_polling()
-    updater.idle()
-
+# Starta botten
 if __name__ == "__main__":
-    main()
+    print("Botten startar...")
+    app.run_polling()
